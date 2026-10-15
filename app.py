@@ -85,16 +85,24 @@ def heading(label: str, subtitle: str=''):
         st.markdown(f'<div class="page-subtitle">{subtitle}</div>', unsafe_allow_html=True)
 
 
+@st.cache_data(ttl=5, max_entries=1, show_spinner=False)
 def data():
-    # In Cloud mode fetch the three lists using a single PostgreSQL connection.
-    # No data cache here: modifications from other authorized sessions should
-    # become visible immediately on the next interaction.
+    """Briefly cache UI lists so a tab change does not reconnect to Neon.
+
+    After successful writes we clear this cache explicitly. Other authorized
+    sessions can see each other's changes at most ~5 seconds later.
+    """
     if db.IS_POSTGRES:
         return db.load_all()
     athletes = db.list_athletes()
     comps = db.list_competitions()
     results = db.list_results()
     return athletes, comps, results
+
+
+def invalidate_data_cache():
+    """Make inserts/updates/deletes immediately visible on the next rerun."""
+    data.clear()
 
 
 def athlete_label(a):
@@ -232,6 +240,7 @@ def page_athletes():
             if submitted:
                 try:
                     new_id = db.add_athlete(first,last,gender,year or None,notes)
+                    invalidate_data_cache()
                     st.success(f'Athlet wurde angelegt (ID {new_id}).')
                     st.rerun()
                 except ValueError as ex:
@@ -288,6 +297,7 @@ def page_athletes():
                 if st.form_submit_button('Änderungen speichern',type='primary'):
                     try:
                         db.edit_athlete(chosen,firstname,lastname,g,y or None,note,active)
+                        invalidate_data_cache()
                         st.success('Athlet gespeichert.')
                         st.rerun()
                     except ValueError as ex:
@@ -300,6 +310,7 @@ def page_athletes():
             if st.button('Athlet und sämtliche Ergebnisse löschen', type='primary',
                          disabled=(confirm != required), key='delath_button'):
                 db.delete_athlete(chosen)
+                invalidate_data_cache()
                 st.success('Athlet und Ergebnisse gelöscht.')
                 st.rerun()
 
@@ -375,7 +386,9 @@ def page_competitions():
                             from domain import safe_name
                             safe_name(name, 'Wettkampf')
                             cid = db.create_competition(name,event_date,location)
+                            invalidate_data_cache()
                         status = db.save_result(aid,cid,result,overwrite=False)
+                        invalidate_data_cache()
                         if status=='übersprungen':
                             st.warning('Für diese Person existiert bei diesem Wettkampf bereits ein Ergebnis. ' 
                                        'Zum Korrigieren den Tab „Ergebnisse verwalten“ verwenden.')
@@ -393,6 +406,7 @@ def page_competitions():
             if st.form_submit_button('Wettkampf anlegen',type='primary'):
                 try:
                     db.create_competition(comp_name,comp_date,comp_loc)
+                    invalidate_data_cache()
                     st.success('Wettkampf angelegt.')
                     st.rerun()
                 except ValueError as ex:
@@ -410,6 +424,7 @@ def page_competitions():
                 confirm=st.checkbox('Ich möchte den Wettkampf und alle seine Ergebnisse endgültig löschen.')
                 if st.button('Wettkampf löschen',disabled=not confirm):
                     db.delete_competition(delcid)
+                    invalidate_data_cache()
                     st.success('Wettkampf gelöscht.')
                     st.rerun()
         else:
@@ -435,6 +450,7 @@ def page_competitions():
                 if st.form_submit_button('Ergebnis aktualisieren',type='primary'):
                     try:
                         state=db.save_result(selected['athlete_id'],selected['competition_id'],changes,overwrite=True)
+                        invalidate_data_cache()
                         st.success('Ergebnis aktualisiert.')
                         st.rerun()
                     except ValueError as ex:
@@ -443,6 +459,7 @@ def page_competitions():
                 checked=st.checkbox('Ja, dieses einzelne Ergebnis unwiderruflich löschen.',key=f'confirm_delres_{rid}')
                 if st.button('Ergebnis löschen',disabled=not checked,key=f'delres_{rid}'):
                     db.delete_result(rid)
+                    invalidate_data_cache()
                     st.success('Ergebnis gelöscht.')
                     st.rerun()
 
@@ -517,6 +534,7 @@ def page_csv():
     if st.button(f'{len(parsed)} Ergebnisse importieren',type='primary'):
         try:
             stats=db.import_results(parsed,overwrite=replace)
+            invalidate_data_cache()
             st.success(f'Import abgeschlossen: {stats["neu"]} neu, {stats["aktualisiert"]} aktualisiert, '
                 f'{stats["übersprungen"]} übersprungen. Neue Athleten: {stats["athleten_neu"]}; '
                 f'neue Wettkämpfe: {stats["wettkaempfe_neu"]}.')
@@ -607,7 +625,7 @@ with st.sidebar:
             st.rerun()
     else:
         st.caption('SQLite · lokale Speicherung (auf Streamlit Cloud nicht dauerhaft)')
-    st.caption('Version 1.3')
+    st.caption('Version 1.4')
 
 PAGES={'🏠 Übersicht':page_overview,'👥 Athleten':page_athletes,'🏟️ Wettkämpfe':page_competitions,
        '📥 CSV-Import':page_csv,'📈 Auswertungen':page_analysis,'💾 Export & Sicherung':page_backup}
