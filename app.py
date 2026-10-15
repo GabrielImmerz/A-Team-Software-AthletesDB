@@ -47,6 +47,7 @@ if cloud_url:
 import database as db
 from csv_import import read_csv
 from domain import ATTEMPTS, format_attempt
+from relativwertung import relativwerte, mit_relativwerten
 
 # Database tables only need to be initialized once per Streamlit server process.
 # Streamlit reruns the script on every widget interaction; repeating DDL and a
@@ -58,8 +59,8 @@ def _ensure_database_initialized():
 
 _ensure_database_initialized()
 
-COLORS = {'total_kg':'#35d4bd','snatch_best':'#67aaff','clean_jerk_best':'#f7bd66', 'bodyweight_kg':'#b7a4ff'}
-METRICS = {'total_kg':'Zweikampf','snatch_best':'Reißen','clean_jerk_best':'Stoßen','bodyweight_kg':'Körpergewicht'}
+COLORS = {'total_kg':'#35d4bd','snatch_best':'#67aaff','clean_jerk_best':'#f7bd66', 'bodyweight_kg':'#b7a4ff', 'relative_points':'#efbb66'}
+METRICS = {'total_kg':'Zweikampf','snatch_best':'Reißen','clean_jerk_best':'Stoßen','bodyweight_kg':'Körpergewicht', 'relative_points':'Relativpunkte'}
 GENDERS = {'-':'Keine Angabe','w':'Weiblich','m':'Männlich','d':'Divers'}
 
 st.markdown('''<style>
@@ -93,11 +94,12 @@ def data():
     sessions can see each other's changes at most ~5 seconds later.
     """
     if db.IS_POSTGRES:
-        return db.load_all()
-    athletes = db.list_athletes()
-    comps = db.list_competitions()
-    results = db.list_results()
-    return athletes, comps, results
+        athletes, comps, results = db.load_all()
+    else:
+        athletes = db.list_athletes()
+        comps = db.list_competitions()
+        results = db.list_results()
+    return athletes, comps, mit_relativwerten(results)
 
 
 def invalidate_data_cache():
@@ -148,11 +150,13 @@ def display_results(rows, *, show_athlete=True, height=340):
                 axis=1,
             )
             cols.append(title)
-    cols += ['placing']
+    cols += ['relative_deduction','relative_snatch','relative_cj','relative_points','placing']
     view = frame[cols].rename(columns={
         'event_date':'Datum','competition_name':'Wettkampf',
         'bodyweight_kg':'Körpergewicht (kg)','snatch_best':'Reißen (kg)',
-        'clean_jerk_best':'Stoßen (kg)','total_kg':'Zweikampf (kg)','placing':'Platz'})
+        'clean_jerk_best':'Stoßen (kg)','total_kg':'Zweikampf (kg)',
+        'relative_deduction':'Relativabzug (kg)', 'relative_snatch':'Reißen (Rel.)',
+        'relative_cj':'Stoßen (Rel.)','relative_points':'Relativpunkte','placing':'Platz'})
     view['Datum'] = view['Datum'].map(showdate)
     st.dataframe(view.iloc[::-1], hide_index=True, use_container_width=True, height=height)
 
@@ -167,21 +171,22 @@ def make_trend(rows, metric='total_kg', *, pb=True):
     df['x'] = pd.to_datetime(df['event_date'])
     df = df.sort_values(['x', 'id'])
     fig = go.Figure()
+    unit = 'Pkt.' if metric == 'relative_points' else 'kg'
     fig.add_trace(go.Scatter(x=df['x'], y=df[metric], mode='lines+markers',
         name=METRICS[metric], marker=dict(size=10), line=dict(color=COLORS[metric], width=3),
         customdata=df[['competition_name','location']].fillna('').values,
-        hovertemplate='%{x|%d.%m.%Y}<br><b>%{y:g} kg</b><br>%{customdata[0]}<br>%{customdata[1]}<extra></extra>'))
+        hovertemplate=f'%{{x|%d.%m.%Y}}<br><b>%{{y:g}} {unit}</b><br>%{{customdata[0]}}<br>%{{customdata[1]}}<extra></extra>'))
     if pb and metric != 'bodyweight_kg':
         df['previous_pb'] = df[metric].cummax().shift(1).fillna(-1)
         personal_bests = df[(df[metric] > df['previous_pb']) & (df[metric] > 0)]
         fig.add_trace(go.Scatter(x=personal_bests['x'], y=personal_bests[metric],
             mode='markers', name='Neuer Wettkampf-PB', marker=dict(color='#ffca79', size=14, symbol='star'),
-            hovertemplate='Neuer PB: %{y:g} kg<extra></extra>'))
+            hovertemplate=f'Neuer PB: %{{y:g}} {unit}<extra></extra>'))
     fig.update_layout(height=370, margin=dict(l=5,r=10,t=15,b=10),
                       paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
                       font=dict(color='#d0dae5'), hovermode='x unified', legend=dict(orientation='h',y=-.18),
                       xaxis=dict(title=None, gridcolor='#253449'),
-                      yaxis=dict(title='Kilogramm', gridcolor='#253449'))
+                      yaxis=dict(title='Relativpunkte' if metric == 'relative_points' else 'Kilogramm', gridcolor='#253449'))
     return fig
 
 
@@ -259,14 +264,19 @@ def page_athletes():
         q2.metric('PB Reißen',kg(stat_max(athlete_results,'snatch_best')))
         q3.metric('PB Stoßen',kg(stat_max(athlete_results,'clean_jerk_best')))
         q4.metric('PB Zweikampf',kg(stat_max(athlete_results,'total_kg')))
+        if athlete_results and athlete['gender'] not in ('m','w'):
+            st.info('Für die normale BVDG-Relativwertung bitte in den Stammdaten „Männlich“ oder „Weiblich“ festlegen.')
         if athlete_results:
+            rel_pb = stat_max(athlete_results,'relative_points')
+            st.metric('Persönliche Bestleistung Relativwertung',
+                      f'{rel_pb:g} Punkte'.replace('.', ',') if rel_pb is not None else '–')
             valid_totals = [rec for rec in athlete_results if rec['total_kg'] is not None and rec['total_kg'] > 0]
             if len(valid_totals) >= 2:
                 first_total, latest_total = valid_totals[0]['total_kg'], valid_totals[-1]['total_kg']
                 improvement = latest_total - first_total
                 st.metric('Entwicklung Zweikampf (erster → letzter Wettkampf)',
                           kg(latest_total), delta=f'{improvement:+g} kg seit {showdate(valid_totals[0]["event_date"])}')
-            metric = st.selectbox('Leistungsverlauf', ['total_kg','snatch_best','clean_jerk_best','bodyweight_kg'],
+            metric = st.selectbox('Leistungsverlauf', ['total_kg','snatch_best','clean_jerk_best','relative_points','bodyweight_kg'],
                                   format_func=lambda x:METRICS[x], key='athlete_graph')
             fig = make_trend(athlete_results,metric)
             if fig:
@@ -277,7 +287,8 @@ def page_athletes():
             summary = seasons.groupby('Jahr', as_index=False).agg(
                 Starts=('id','count'), **{'Reißen PB (kg)':('snatch_best','max'),
                                       'Stoßen PB (kg)':('clean_jerk_best','max'),
-                                      'Zweikampf PB (kg)':('total_kg','max')})
+                                      'Zweikampf PB (kg)':('total_kg','max'),
+                                      'Relativ-PB (Pkt.)':('relative_points','max')})
             st.dataframe(summary.sort_values('Jahr', ascending=False),hide_index=True,use_container_width=True)
             st.subheader('Alle Wettkampfergebnisse')
             display_results(athlete_results,show_athlete=False)
@@ -364,6 +375,7 @@ def page_competitions():
             athlete_map = {a['id']:a for a in athletes}
             comp_map = {c['id']:c for c in competitions}
             detailed = st.checkbox('Einzelversuche erfassen (mit gültig / ungültig)', value=True, key='manual_detailed')
+            st.caption('Die BVDG-Relativpunkte berechnet die App nach dem Speichern automatisch aus Geschlecht, Körpergewicht und gültigen Bestwerten. Kein zusätzliches Punktefeld nötig.')
             with st.form('add_result'):
                 aid = st.selectbox('Athlet',list(athlete_map),format_func=lambda v:athlete_label(athlete_map[v]))
                 options = [0]+list(comp_map)
@@ -393,7 +405,13 @@ def page_competitions():
                             st.warning('Für diese Person existiert bei diesem Wettkampf bereits ein Ergebnis. ' 
                                        'Zum Korrigieren den Tab „Ergebnisse verwalten“ verwenden.')
                         else:
-                            st.success('Ergebnis gespeichert. Der Zweikampf wurde automatisch berechnet.')
+                            calculated = relativwerte({**result, 'gender': athlete_map[aid]['gender'],
+                                                       **validate_result(result)})
+                            points = calculated['relative_points']
+                            if points is not None:
+                                st.success(f'Ergebnis gespeichert · {points:g} Relativpunkte automatisch berechnet.')
+                            else:
+                                st.success('Ergebnis gespeichert. Relativpunkte erscheinen, sobald Geschlecht und Körpergewicht innerhalb der Tabelle angegeben sind.')
                     except ValueError as ex:
                         st.error(str(ex))
     with tab2:
@@ -466,7 +484,7 @@ def page_competitions():
 
 def _csv_export(results):
     columns = ['athleten_id','Vorname','Nachname','Geschlecht','Datum','Wettkampf','Ort',
-        'Körpergewicht','Gewichtsklasse','Reißen','Stoßen','Zweikampf','Platz','Bemerkung',
+        'Körpergewicht','Gewichtsklasse','Reißen','Stoßen','Zweikampf','Relativabzug','Relativ Reißen','Relativ Stoßen','Relativpunkte','Platz','Bemerkung',
         's1','s2','s3','c1','c2','c3']
     buffer = StringIO()
     writer=csv.DictWriter(buffer,fieldnames=columns,delimiter=';',lineterminator='\r\n')
@@ -476,6 +494,8 @@ def _csv_export(results):
             'Geschlecht':r['gender'],'Datum':r['event_date'],'Wettkampf':r['competition_name'],'Ort':r['location'],
             'Körpergewicht':r['bodyweight_kg'],'Gewichtsklasse':r['weight_class'],
             'Reißen':r['snatch_best'],'Stoßen':r['clean_jerk_best'],'Zweikampf':r['total_kg'],
+            'Relativabzug':r['relative_deduction'],'Relativ Reißen':r['relative_snatch'],
+            'Relativ Stoßen':r['relative_cj'],'Relativpunkte':r['relative_points'],
             'Platz':r['placing'],'Bemerkung':r['notes'],
             **{attempt: format_attempt(r[attempt], blank='') for attempt in ATTEMPTS}}
         writer.writerow({k: ('' if v is None else str(v).replace('.',',') if isinstance(v,float) else v)
@@ -519,9 +539,10 @@ def page_csv():
         st.warning('Keine gültigen Ergebnisse zum Import gefunden.')
         return
     st.subheader('Vorschau')
-    preview = pd.DataFrame(parsed)
+    preview_records = [{**row, **relativwerte(row)} for row in parsed]
+    preview = pd.DataFrame(preview_records)
     wanted = ['first_name','last_name','competition_name','event_date','bodyweight_kg',
-              'snatch_best','clean_jerk_best','total_kg']
+              'snatch_best','clean_jerk_best','total_kg','relative_deduction','relative_points']
     if any(any(row.get(a) is not None for a in ATTEMPTS) for row in parsed):
         for prefix, title in (('s', 'Reißen: Versuche'), ('c', 'Stoßen: Versuche')):
             preview[title] = preview.apply(
@@ -529,6 +550,8 @@ def page_csv():
             )
             wanted.append(title)
     st.dataframe(preview[[k for k in wanted if k in preview]].head(30),hide_index=True,use_container_width=True)
+    st.caption('Relativpunkte in der Vorschau benötigen Geschlecht und Körpergewicht in der CSV. ' 
+               'Für bereits angelegte Athleten wird nach dem Import das Geschlecht aus dem Athletenprofil verwendet.')
     replace=st.checkbox('Bereits vorhandene Ergebnisse (Athlet + Wettkampf) überschreiben',value=False)
     st.caption('Ohne Häkchen werden Doppeleinträge übersprungen. Fehlerhafte Zeilen werden nicht importiert.')
     if st.button(f'{len(parsed)} Ergebnisse importieren',type='primary'):
@@ -564,7 +587,7 @@ def page_analysis():
     frame['Datum']=pd.to_datetime(frame['event_date'])
     fig=px.line(frame.sort_values('Datum'),x='Datum',y=metric,color='Athlet',markers=True,
                 hover_data={'competition_name':True,'Datum':True,metric:':.1f'},
-                labels={metric:f'{METRICS[metric]} (kg)'})
+                labels={metric:f'{METRICS[metric]} ({"Pkt." if metric == "relative_points" else "kg"})'})
     fig.update_traces(line=dict(width=3),marker=dict(size=9))
     fig.update_layout(height=480,paper_bgcolor='rgba(0,0,0,0)',plot_bgcolor='rgba(0,0,0,0)',
                       font=dict(color='#d0dae5'),margin=dict(l=5,r=10,t=15,b=15),
@@ -577,10 +600,11 @@ def page_analysis():
         records.append({'Athlet':athlete_label(by_id[aid]),'Starts':len(records_for),
             'Reißen PB (kg)':stat_max(records_for,'snatch_best'),
             'Stoßen PB (kg)':stat_max(records_for,'clean_jerk_best'),
-            'Zweikampf PB (kg)':stat_max(records_for,'total_kg')})
+            'Zweikampf PB (kg)':stat_max(records_for,'total_kg'),
+            'Relativ-PB (Pkt.)':stat_max(records_for,'relative_points')})
     st.dataframe(pd.DataFrame(records),hide_index=True,use_container_width=True)
     st.caption('PB = persönliche Wettkampfbestleistung innerhalb der gespeicherten Daten. ' 
-               'Es werden keine alters- oder gewichtsbereinigten Punkte berechnet.')
+               'Relativpunkte nach BVDG-Abzugstabelle, ohne Altersfaktor.')
 
 
 def page_backup():
@@ -625,7 +649,7 @@ with st.sidebar:
             st.rerun()
     else:
         st.caption('SQLite · lokale Speicherung (auf Streamlit Cloud nicht dauerhaft)')
-    st.caption('Version 1.4')
+    st.caption('Version 1.5 · Relativwertung')
 
 PAGES={'🏠 Übersicht':page_overview,'👥 Athleten':page_athletes,'🏟️ Wettkämpfe':page_competitions,
        '📥 CSV-Import':page_csv,'📈 Auswertungen':page_analysis,'💾 Export & Sicherung':page_backup}
