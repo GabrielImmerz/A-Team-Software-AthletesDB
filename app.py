@@ -48,7 +48,15 @@ import database as db
 from csv_import import read_csv
 from domain import ATTEMPTS, format_attempt
 
-db.init_db()
+# Database tables only need to be initialized once per Streamlit server process.
+# Streamlit reruns the script on every widget interaction; repeating DDL and a
+# new Neon connection on each rerun needlessly slows the UI down.
+@st.cache_resource(show_spinner=False)
+def _ensure_database_initialized():
+    db.init_db()
+    return True
+
+_ensure_database_initialized()
 
 COLORS = {'total_kg':'#35d4bd','snatch_best':'#67aaff','clean_jerk_best':'#f7bd66', 'bodyweight_kg':'#b7a4ff'}
 METRICS = {'total_kg':'Zweikampf','snatch_best':'Reißen','clean_jerk_best':'Stoßen','bodyweight_kg':'Körpergewicht'}
@@ -78,6 +86,11 @@ def heading(label: str, subtitle: str=''):
 
 
 def data():
+    # In Cloud mode fetch the three lists using a single PostgreSQL connection.
+    # No data cache here: modifications from other authorized sessions should
+    # become visible immediately on the next interaction.
+    if db.IS_POSTGRES:
+        return db.load_all()
     athletes = db.list_athletes()
     comps = db.list_competitions()
     results = db.list_results()
@@ -594,7 +607,7 @@ with st.sidebar:
             st.rerun()
     else:
         st.caption('SQLite · lokale Speicherung (auf Streamlit Cloud nicht dauerhaft)')
-    st.caption('Version 1.2')
+    st.caption('Version 1.3')
 
 PAGES={'🏠 Übersicht':page_overview,'👥 Athleten':page_athletes,'🏟️ Wettkämpfe':page_competitions,
        '📥 CSV-Import':page_csv,'📈 Auswertungen':page_analysis,'💾 Export & Sicherung':page_backup}

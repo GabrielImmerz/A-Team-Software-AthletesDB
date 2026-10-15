@@ -242,5 +242,5 @@ if IS_POSTGRES:
         edit_athlete, delete_athlete, create_competition,
         _get_or_create_competition, list_competitions, delete_competition,
         _write_result, save_result, delete_result, list_results,
-        import_results, backup_bytes,
+        import_results, backup_bytes, load_all,
     )

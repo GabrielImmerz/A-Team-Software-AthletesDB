@@ -97,6 +97,27 @@ def list_athletes(db_path=None):
         return [dict(r) for r in c.fetchall()]
 
 
+def load_all(db_path=None):
+    """Return all UI lists with one read-only connection instead of three."""
+    with connect(db_path) as c:
+        c.execute('''SELECT * FROM athletes
+            ORDER BY lower(last_name), lower(first_name), id''')
+        athletes = [dict(r) for r in c.fetchall()]
+
+        c.execute('''SELECT c.*, COUNT(r.id) AS starts
+            FROM competitions c LEFT JOIN results r ON r.competition_id=c.id
+            GROUP BY c.id ORDER BY c.event_date DESC,c.name''')
+        competitions = [dict(r) for r in c.fetchall()]
+
+        c.execute('''SELECT r.*,a.first_name,a.last_name,a.gender,
+            c.name AS competition_name,c.event_date,c.location
+            FROM results r JOIN athletes a ON a.id=r.athlete_id
+            JOIN competitions c ON c.id=r.competition_id
+            ORDER BY c.event_date,c.name,a.last_name,a.first_name,r.id''')
+        results = [dict(r) for r in c.fetchall()]
+    return athletes, competitions, results
+
+
 def validate_year(value):
     if value is None or text(value) == '':
         return None
