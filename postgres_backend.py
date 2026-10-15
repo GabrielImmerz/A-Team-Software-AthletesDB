@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS results (
   snatch_best DOUBLE PRECISION,
   clean_jerk_best DOUBLE PRECISION,
   total_kg DOUBLE PRECISION,
-  placing INTEGER,
+  "placing" INTEGER,
   notes TEXT NOT NULL DEFAULT '',
   created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(athlete_id, competition_id)
@@ -177,9 +177,11 @@ def _write_result(c, athlete_id: int, competition_id: int, data: dict, overwrite
     if exists and not overwrite:
         return 'übersprungen'
     values = validate_result(data)
-    fields = ','.join(_RESULT_FIELDS)
+    # Quote column names because PostgreSQL reserves words such as PLACING.
+    # All column names come from our fixed _RESULT_FIELDS tuple (not user input).
+    fields = ','.join(f'"{f}"' for f in _RESULT_FIELDS)
     placeholders = ','.join(['%s'] * len(_RESULT_FIELDS))
-    update_fields = ','.join(f'{f}=EXCLUDED.{f}' for f in _RESULT_FIELDS)
+    update_fields = ','.join(f'"{f}"=EXCLUDED."{f}"' for f in _RESULT_FIELDS)
     c.execute(f'''INSERT INTO results(athlete_id,competition_id,{fields})
                VALUES(%s,%s,{placeholders})
                ON CONFLICT(athlete_id,competition_id) DO UPDATE SET {update_fields}''',
