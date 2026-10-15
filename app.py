@@ -337,22 +337,20 @@ def _result_form_fields(*, prefix='', initial=None, detailed=False):
                                  value=int(initial.get('placing') or 0),key=f'{prefix}placing')
     fields = {}
     if detailed:
-        st.caption('Gewicht eintragen und bei einem Fehlversuch „Ungültig“ anklicken. 0 kg bedeutet: kein Versuch.')
+        st.caption('Pro Versuch direkt eintragen: **94** = gültig · **x94** oder **-94** = ungültig · '
+                   '**v** = Verzicht · **-** = nicht angetreten. '
+                   'Ein verpasster Versuch nach Ablauf der Zeit ist ungültig, nicht „-“.')
         for p, label in (('s', 'Reißen'), ('c', 'Stoßen')):
             st.markdown(f'**{label}**')
             cs = st.columns(3)
             for n, col in enumerate(cs, start=1):
                 field = f'{p}{n}'
-                previous = float(initial.get(field) or 0.0)
-                amount = col.number_input(
-                    f'{n}. Versuch (kg)', min_value=0.0, max_value=500.0,
-                    value=abs(previous), step=1.0, key=f'{prefix}{field}',
+                fields[field] = col.text_input(
+                    f'{n}. Versuch',
+                    value=format_attempt(initial.get(field), blank='-'),
+                    key=f'{prefix}{field}',
+                    placeholder='94 / x94 / -94 / v / -',
                 )
-                failed = col.checkbox(
-                    '❌ Ungültig', value=previous < 0,
-                    key=f'{prefix}{field}_failed',
-                )
-                fields[field] = (-amount if failed else amount) if amount > 0 else None
     else:
         l,r = st.columns(2)
         fields['snatch_best'] = l.number_input('Bestes Reißen (kg)',0.0,500.0,
@@ -374,7 +372,7 @@ def page_competitions():
         else:
             athlete_map = {a['id']:a for a in athletes}
             comp_map = {c['id']:c for c in competitions}
-            detailed = st.checkbox('Einzelversuche erfassen (mit gültig / ungültig)', value=True, key='manual_detailed')
+            detailed = st.checkbox('Einzelversuche erfassen (inkl. x94, -94, v, -)', value=True, key='manual_detailed')
             st.caption('Die BVDG-Relativpunkte berechnet die App nach dem Speichern automatisch aus Geschlecht, Körpergewicht und gültigen Bestwerten. Kein zusätzliches Punktefeld nötig.')
             with st.form('add_result'):
                 aid = st.selectbox('Athlet',list(athlete_map),format_func=lambda v:athlete_label(athlete_map[v]))
@@ -411,7 +409,7 @@ def page_competitions():
                             if points is not None:
                                 st.success(f'Ergebnis gespeichert · {points:g} Relativpunkte automatisch berechnet.')
                             else:
-                                st.success('Ergebnis gespeichert. Relativpunkte erscheinen, sobald Geschlecht und Körpergewicht innerhalb der Tabelle angegeben sind.')
+                                st.success('Ergebnis gespeichert. Für Relativpunkte sind gültige Leistungen, Geschlecht und ein Körpergewicht innerhalb der Tabelle nötig.')
                     except ValueError as ex:
                         st.error(str(ex))
     with tab2:
@@ -458,7 +456,7 @@ def page_competitions():
             selected=map_results[rid]
             has_attempts = any(selected.get(attempt) is not None for attempt in ATTEMPTS)
             detailed_edit = st.checkbox(
-                'Einzelversuche bearbeiten (inklusive ungültiger Versuche)',
+                'Einzelversuche bearbeiten (inklusive Verzicht / Nichtantritt)',
                 value=has_attempts, key=f'edit_detailed_{rid}',
             )
             if has_attempts and not detailed_edit:
@@ -497,7 +495,7 @@ def _csv_export(results):
             'Relativabzug':r['relative_deduction'],'Relativ Reißen':r['relative_snatch'],
             'Relativ Stoßen':r['relative_cj'],'Relativpunkte':r['relative_points'],
             'Platz':r['placing'],'Bemerkung':r['notes'],
-            **{attempt: format_attempt(r[attempt], blank='') for attempt in ATTEMPTS}}
+            **{attempt: format_attempt(r[attempt], blank='-') for attempt in ATTEMPTS}}
         writer.writerow({k: ('' if v is None else str(v).replace('.',',') if isinstance(v,float) else v)
                          for k,v in values.items()})
     return buffer.getvalue().encode('utf-8-sig')
@@ -509,13 +507,14 @@ def page_csv():
     l,r=st.columns(2)
     l.download_button('⬇️ Beispiel-CSV herunterladen',example_path.read_bytes(),
                       file_name='wettkaempfe_beispiel.csv',mime='text/csv')
-    advanced=db.BASE / 'beispiele' / 'einzelversuche_beispiel.csv'
+    advanced=db.BASE / 'beispiele' / 'versuchsstatus_beispiel.csv'
     r.download_button('⬇️ Beispiel mit Einzelversuchen',advanced.read_bytes(),
-                      file_name='einzelversuche_beispiel.csv',mime='text/csv')
+                      file_name='versuchsstatus_beispiel.csv',mime='text/csv')
     st.info('Pflicht: **Athlet** (oder **Vorname** + **Nachname**), **Datum**, **Wettkampf** und '
-            'mindestens eine Leistung (**Reißen**, **Stoßen**, **Zweikampf** oder Einzelversuche). '
-            'Ungültige Einzelversuche können als **x94** oder **-94** geschrieben werden, '
-            'gültige als **94**. Neue Athleten und Wettkämpfe werden automatisch angelegt.')
+            'mindestens ein Ergebnis oder dokumentierter Versuch (auch **v** oder ungültig). '
+            'Gültig: **94**, ungültig: **x94** oder **-94**, Verzicht: **v**, '
+            'nicht angetreten: **-**. Ein Zweikampf wird nur bei gültigem Reißen '
+            'und Stoßen berechnet. Neue Athleten und Wettkämpfe werden automatisch angelegt.')
     upload=st.file_uploader('CSV-Datei auswählen',type=['csv'])
     if upload is None:
         st.caption('Erlaubt: CSV mit Semikolon, Komma oder Tab als Trennzeichen; UTF-8 oder Windows-1252.')
@@ -649,7 +648,7 @@ with st.sidebar:
             st.rerun()
     else:
         st.caption('SQLite · lokale Speicherung (auf Streamlit Cloud nicht dauerhaft)')
-    st.caption('Version 1.5 · Relativwertung')
+    st.caption('Version 1.6 · Versuchstatus & Relativwertung')
 
 PAGES={'🏠 Übersicht':page_overview,'👥 Athleten':page_athletes,'🏟️ Wettkämpfe':page_competitions,
        '📥 CSV-Import':page_csv,'📈 Auswertungen':page_analysis,'💾 Export & Sicherung':page_backup}

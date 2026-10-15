@@ -94,4 +94,13 @@ def relativwerte(record: dict) -> dict:
 
 
 def mit_relativwerten(results: list[dict]) -> list[dict]:
-    return [{**r, **relativwerte(r)} for r in results]
+    output = []
+    for record in results:
+        item = dict(record)
+        # Altbestände: Frühere Versionen konnten bei Fehlversuchen 0 statt
+        # NULL als Zweikampf speichern. Null ist niemals ein gültiger Zweikampf.
+        if item.get('total_kg') is not None and float(item['total_kg']) <= 0:
+            item['total_kg'] = None
+        item.update(relativwerte(item))
+        output.append(item)
+    return output
