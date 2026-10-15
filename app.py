@@ -46,7 +46,7 @@ if cloud_url:
 
 import database as db
 from csv_import import read_csv
-from domain import ATTEMPTS
+from domain import ATTEMPTS, format_attempt
 
 db.init_db()
 
@@ -118,7 +118,16 @@ def display_results(rows, *, show_athlete=True, height=340):
     if show_athlete:
         frame['Athlet'] = frame['first_name'] + ' ' + frame['last_name']
         cols += ['Athlet']
-    cols += ['bodyweight_kg','snatch_best','clean_jerk_best','total_kg','placing']
+    cols += ['bodyweight_kg','snatch_best','clean_jerk_best','total_kg']
+    # Einzelversuche kompakt sichtbar machen: 92 / x94 / 94.
+    if any(any(record.get(a) is not None for a in ATTEMPTS) for record in rows):
+        for prefix, title in (('s', 'Reißen: Versuche'), ('c', 'Stoßen: Versuche')):
+            frame[title] = frame.apply(
+                lambda record: ' / '.join(format_attempt(record[f'{prefix}{i}']) for i in range(1, 4)),
+                axis=1,
+            )
+            cols.append(title)
+    cols += ['placing']
     view = frame[cols].rename(columns={
         'event_date':'Datum','competition_name':'Wettkampf',
         'bodyweight_kg':'Körpergewicht (kg)','snatch_best':'Reißen (kg)',
@@ -293,15 +302,22 @@ def _result_form_fields(*, prefix='', initial=None, detailed=False):
                                  value=int(initial.get('placing') or 0),key=f'{prefix}placing')
     fields = {}
     if detailed:
-        st.caption('Einzelversuche: positives Gewicht = gültig, negatives Gewicht = ungültig, 0 = nicht gestartet.')
-        for p,label in (('s','Reißen'),('c','Stoßen')):
+        st.caption('Gewicht eintragen und bei einem Fehlversuch „Ungültig“ anklicken. 0 kg bedeutet: kein Versuch.')
+        for p, label in (('s', 'Reißen'), ('c', 'Stoßen')):
             st.markdown(f'**{label}**')
             cs = st.columns(3)
-            for n,col in enumerate(cs,start=1):
-                field=f'{p}{n}'
-                fields[field]= col.number_input(f'Versuch {n}',-500.0,500.0,
-                           value=float(initial.get(field) or 0.0),step=1.0,key=f'{prefix}{field}')
-        fields = {k: (v or None) for k,v in fields.items()}
+            for n, col in enumerate(cs, start=1):
+                field = f'{p}{n}'
+                previous = float(initial.get(field) or 0.0)
+                amount = col.number_input(
+                    f'{n}. Versuch (kg)', min_value=0.0, max_value=500.0,
+                    value=abs(previous), step=1.0, key=f'{prefix}{field}',
+                )
+                failed = col.checkbox(
+                    '❌ Ungültig', value=previous < 0,
+                    key=f'{prefix}{field}_failed',
+                )
+                fields[field] = (-amount if failed else amount) if amount > 0 else None
     else:
         l,r = st.columns(2)
         fields['snatch_best'] = l.number_input('Bestes Reißen (kg)',0.0,500.0,
@@ -323,7 +339,7 @@ def page_competitions():
         else:
             athlete_map = {a['id']:a for a in athletes}
             comp_map = {c['id']:c for c in competitions}
-            detailed = st.checkbox('Einzelversuche statt Bestwerten erfassen',key='manual_detailed')
+            detailed = st.checkbox('Einzelversuche erfassen (mit gültig / ungültig)', value=True, key='manual_detailed')
             with st.form('add_result'):
                 aid = st.selectbox('Athlet',list(athlete_map),format_func=lambda v:athlete_label(athlete_map[v]))
                 options = [0]+list(comp_map)
@@ -394,9 +410,15 @@ def page_competitions():
             rid = st.selectbox('Ergebnis zum Bearbeiten wählen',list(map_results),
                                format_func=lambda v:result_label(map_results[v]))
             selected=map_results[rid]
-            st.caption('Bei der Korrektur werden vorhandene Einzelversuche durch die neuen Bestwerte ersetzt.')
+            has_attempts = any(selected.get(attempt) is not None for attempt in ATTEMPTS)
+            detailed_edit = st.checkbox(
+                'Einzelversuche bearbeiten (inklusive ungültiger Versuche)',
+                value=has_attempts, key=f'edit_detailed_{rid}',
+            )
+            if has_attempts and not detailed_edit:
+                st.warning('Achtung: Beim Speichern als Bestwerte werden die sechs bisherigen Einzelversuche entfernt.')
             with st.form(f'edit_result_{rid}'):
-                changes=_result_form_fields(prefix=f'edit_{rid}_',initial=selected,detailed=False)
+                changes = _result_form_fields(prefix=f'edit_{rid}_', initial=selected, detailed=detailed_edit)
                 if st.form_submit_button('Ergebnis aktualisieren',type='primary'):
                     try:
                         state=db.save_result(selected['athlete_id'],selected['competition_id'],changes,overwrite=True)
@@ -424,7 +446,8 @@ def _csv_export(results):
             'Geschlecht':r['gender'],'Datum':r['event_date'],'Wettkampf':r['competition_name'],'Ort':r['location'],
             'Körpergewicht':r['bodyweight_kg'],'Gewichtsklasse':r['weight_class'],
             'Reißen':r['snatch_best'],'Stoßen':r['clean_jerk_best'],'Zweikampf':r['total_kg'],
-            'Platz':r['placing'],'Bemerkung':r['notes'],**{s:r[s] for s in ATTEMPTS}}
+            'Platz':r['placing'],'Bemerkung':r['notes'],
+            **{attempt: format_attempt(r[attempt], blank='') for attempt in ATTEMPTS}}
         writer.writerow({k: ('' if v is None else str(v).replace('.',',') if isinstance(v,float) else v)
                          for k,v in values.items()})
     return buffer.getvalue().encode('utf-8-sig')
@@ -439,9 +462,10 @@ def page_csv():
     advanced=db.BASE / 'beispiele' / 'einzelversuche_beispiel.csv'
     r.download_button('⬇️ Beispiel mit Einzelversuchen',advanced.read_bytes(),
                       file_name='einzelversuche_beispiel.csv',mime='text/csv')
-    st.info('Pflicht: **Athlet** (oder **Vorname** + **Nachname**), **Datum**, **Wettkampf** und ' 
-            'mindestens eine Leistung (**Reißen**, **Stoßen**, **Zweikampf** oder Einzelversuche). ' 
-            'Neue Athleten und Wettkämpfe werden automatisch angelegt. Deutsche Dezimalkommas werden unterstützt.')
+    st.info('Pflicht: **Athlet** (oder **Vorname** + **Nachname**), **Datum**, **Wettkampf** und '
+            'mindestens eine Leistung (**Reißen**, **Stoßen**, **Zweikampf** oder Einzelversuche). '
+            'Ungültige Einzelversuche können als **x94** oder **-94** geschrieben werden, '
+            'gültige als **94**. Neue Athleten und Wettkämpfe werden automatisch angelegt.')
     upload=st.file_uploader('CSV-Datei auswählen',type=['csv'])
     if upload is None:
         st.caption('Erlaubt: CSV mit Semikolon, Komma oder Tab als Trennzeichen; UTF-8 oder Windows-1252.')
@@ -468,6 +492,12 @@ def page_csv():
     preview = pd.DataFrame(parsed)
     wanted = ['first_name','last_name','competition_name','event_date','bodyweight_kg',
               'snatch_best','clean_jerk_best','total_kg']
+    if any(any(row.get(a) is not None for a in ATTEMPTS) for row in parsed):
+        for prefix, title in (('s', 'Reißen: Versuche'), ('c', 'Stoßen: Versuche')):
+            preview[title] = preview.apply(
+                lambda row: ' / '.join(format_attempt(row[f'{prefix}{i}']) for i in range(1, 4)), axis=1,
+            )
+            wanted.append(title)
     st.dataframe(preview[[k for k in wanted if k in preview]].head(30),hide_index=True,use_container_width=True)
     replace=st.checkbox('Bereits vorhandene Ergebnisse (Athlet + Wettkampf) überschreiben',value=False)
     st.caption('Ohne Häkchen werden Doppeleinträge übersprungen. Fehlerhafte Zeilen werden nicht importiert.')
@@ -564,7 +594,7 @@ with st.sidebar:
             st.rerun()
     else:
         st.caption('SQLite · lokale Speicherung (auf Streamlit Cloud nicht dauerhaft)')
-    st.caption('Version 1.1')
+    st.caption('Version 1.2')
 
 PAGES={'🏠 Übersicht':page_overview,'👥 Athleten':page_athletes,'🏟️ Wettkämpfe':page_competitions,
        '📥 CSV-Import':page_csv,'📈 Auswertungen':page_analysis,'💾 Export & Sicherung':page_backup}

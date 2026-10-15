@@ -9,6 +9,14 @@ import unicodedata
 ATTEMPTS = ('s1', 's2', 's3', 'c1', 'c2', 'c3')
 
 
+def format_attempt(value: float | None, *, blank: str = '–') -> str:
+    """Versuch im Ergebnisprotokoll: gültig 94, ungültig x94, kein Versuch –."""
+    if value is None or float(value) == 0:
+        return blank
+    number = float(value)
+    return ('x' if number < 0 else '') + f'{abs(number):g}'.replace('.', ',')
+
+
 def text(value: object) -> str:
     return str(value).strip() if value is not None else ''
 
@@ -42,6 +50,9 @@ def parse_float(value: object, label: str, *, allow_negative: bool = False, zero
     if isinstance(value, str):
         s = value.strip().replace(' ', '').replace('\u00a0', '')
         # 1.234,5 wird nicht gebraucht; Dezimalkomma und -punkt unterstützen.
+        # Für Einzelversuche steht x94 (oder X94/×94) für einen ungültigen Versuch.
+        if allow_negative and re.fullmatch(r'[xX×]\d+(?:[,.]\d+)?', s):
+            s = '-' + s[1:]
         if not re.fullmatch(r'[+-]?\d+(?:[,.]\d+)?', s):
             raise ValueError(f'{label}: {value!r} ist keine gültige Zahl.')
         s = s.replace(',', '.')
