@@ -23,25 +23,55 @@ def _secret(key):
         return os.getenv(key, '')
 
 
+# A cloud deployment requires *both* distinct role passwords. APP_PASSWORD
+# from previous releases is intentionally not accepted: sharing that old
+# password must never silently confer administrator privileges.
+from access_control import authenticate, can_edit, config_error, session_proof, session_valid
+
 cloud_url = _secret('DATABASE_URL')
 if cloud_url:
     os.environ['DATABASE_URL'] = cloud_url
-    password = _secret('APP_PASSWORD')
-    if not password:
-        st.error('APP_PASSWORD fehlt in den Streamlit-Secrets. Zugriff auf die Cloud-Datenbank gesperrt.')
+    admin_password = str(_secret('ADMIN_PASSWORD'))
+    viewer_password = str(_secret('VIEWER_PASSWORD'))
+    problem = config_error(admin_password, viewer_password)
+    if problem:
+        st.error('Die Rollenanmeldung ist noch nicht eingerichtet: ' + problem)
+        st.info('Bitte zuerst unter Streamlit Community Cloud → App → Settings → Secrets '
+                'ADMIN_PASSWORD und VIEWER_PASSWORD ergänzen. DATABASE_URL unverändert lassen.')
         st.stop()
-    if not st.session_state.get('logged_in', False):
+
+    role = st.session_state.get('auth_role')
+    proof = st.session_state.get('auth_proof')
+    if not session_valid(role, proof, admin_password, viewer_password):
+        st.session_state.pop('auth_role', None)
+        st.session_state.pop('auth_proof', None)
         st.title('🔒 A-Team · Anmeldung')
-        st.info('Zugang zur Vereinsdatenbank nur für berechtigte Personen.')
-        with st.form('login_form'):
-            entered = st.text_input('Vereins-Passwort', type='password')
-            submit = st.form_submit_button('Anmelden', type='primary')
-        if submit:
-            if hmac.compare_digest(entered, password):
-                st.session_state['logged_in'] = True
+        st.info('Administratoren verwalten Daten. Zuschauer können Ergebnisse und Entwicklungen ansehen.')
+        with st.form('role_login_form'):
+            entered = st.text_input('Zugangspasswort', type='password')
+            submitted = st.form_submit_button('Anmelden', type='primary')
+        if submitted:
+            matched = authenticate(entered, admin_password, viewer_password)
+            if matched is not None:
+                st.session_state['auth_role'] = matched
+                st.session_state['auth_proof'] = session_proof(matched, admin_password, viewer_password)
                 st.rerun()
             else:
-                st.error('Passwort ist nicht korrekt.')
+                st.error('Das Passwort ist nicht korrekt.')
+        st.stop()
+else:
+    # The local SQLite installation remains an offline administrator tool.
+    role = 'admin'
+
+
+def is_admin() -> bool:
+    return can_edit(role)
+
+
+def require_admin():
+    """Server-side check for privileged routes (not merely hidden navigation)."""
+    if not is_admin():
+        st.error('Diese Funktion ist nur für Administratoren verfügbar.')
         st.stop()
 
 import database as db
@@ -225,34 +255,43 @@ def page_overview():
                               xaxis=dict(dtick=1,gridcolor='#26384f'),yaxis=dict(title=None))
             st.plotly_chart(fig, use_container_width=True)
     st.subheader('Schnellstart')
-    st.info('Links **Athleten** zum Anlegen wählen oder unter **CSV-Import** deine bestehenden Wettkampflisten einlesen.')
+    if is_admin():
+        st.info('Links **Athleten** zum Anlegen wählen oder unter **CSV-Import** deine bestehenden Wettkampflisten einlesen.')
+    else:
+        st.info('Unter **Athleten** findest du die Karriereverläufe und unter **Wettkämpfe** alle Ergebnisse.')
 
 
 def page_athletes():
     athletes,_,results = data()
-    heading('Athleten', 'Personen verwalten, Bestleistungen ansehen und die Karriere verfolgen.')
-    create_tab,profile_tab = st.tabs(['➕ Neuen Athleten anlegen', '📈 Profil & Verwaltung'])
-    with create_tab:
-        with st.form('new_athlete', clear_on_submit=True):
-            a1,a2 = st.columns(2)
-            first = a1.text_input('Vorname *')
-            last = a2.text_input('Nachname *')
-            a3,a4 = st.columns(2)
-            gender = a3.selectbox('Geschlecht (optional)',list(GENDERS),format_func=lambda x:GENDERS[x])
-            year = a4.text_input('Geburtsjahr (optional)', placeholder='z. B. 2004')
-            notes = st.text_area('Notizen (optional)',height=80)
-            submitted = st.form_submit_button('Athlet anlegen',type='primary')
-            if submitted:
-                try:
-                    new_id = db.add_athlete(first,last,gender,year or None,notes)
-                    invalidate_data_cache()
-                    st.success(f'Athlet wurde angelegt (ID {new_id}).')
-                    st.rerun()
-                except ValueError as ex:
-                    st.error(str(ex))
+    heading('Athleten', 'Personen verwalten, Bestleistungen ansehen und die Karriere verfolgen.' if is_admin()
+            else 'Athletenprofile, Bestleistungen und Karriereverläufe ansehen.')
+    if is_admin():
+        create_tab,profile_tab = st.tabs(['➕ Neuen Athleten anlegen', '📈 Profil & Verwaltung'])
+    else:
+        profile_tab = st.container()
+    if is_admin():
+        with create_tab:
+            with st.form('new_athlete', clear_on_submit=True):
+                a1,a2 = st.columns(2)
+                first = a1.text_input('Vorname *')
+                last = a2.text_input('Nachname *')
+                a3,a4 = st.columns(2)
+                gender = a3.selectbox('Geschlecht (optional)',list(GENDERS),format_func=lambda x:GENDERS[x])
+                year = a4.text_input('Geburtsjahr (optional)', placeholder='z. B. 2004')
+                notes = st.text_area('Notizen (optional)',height=80)
+                submitted = st.form_submit_button('Athlet anlegen',type='primary')
+                if submitted:
+                    try:
+                        new_id = db.add_athlete(first,last,gender,year or None,notes)
+                        invalidate_data_cache()
+                        st.success(f'Athlet wurde angelegt (ID {new_id}).')
+                        st.rerun()
+                    except ValueError as ex:
+                        st.error(str(ex))
     with profile_tab:
         if not athletes:
-            st.info('Lege zuerst einen Athleten an oder importiere eine CSV-Datei.')
+            st.info('Noch keine Athleten vorhanden.' if not is_admin() else
+                    'Lege zuerst einen Athleten an oder importiere eine CSV-Datei.')
             return
         by_id = {a['id']: a for a in athletes}
         chosen = st.selectbox('Athlet auswählen', list(by_id), format_func=lambda x: athlete_label(by_id[x]),
@@ -294,6 +333,8 @@ def page_athletes():
             display_results(athlete_results,show_athlete=False)
         else:
             st.info('Noch keine Wettkampfergebnisse für diese Person.')
+        if not is_admin():
+            return  # Profile is read-only for spectators, including no edit/delete controls.
         with st.expander('✏️ Stammdaten bearbeiten'):
             with st.form(f'edit_athlete_{chosen}'):
                 l,r = st.columns(2)
@@ -362,7 +403,29 @@ def _result_form_fields(*, prefix='', initial=None, detailed=False):
             'placing':placing or None,'notes':notes}
 
 
+def page_competitions_viewer():
+    """Read-only competition directory and results for authenticated spectators."""
+    _, competitions, results = data()
+    heading('Wettkämpfe', 'Wettkampfergebnisse ansehen – ohne Bearbeitungsrechte.')
+    if not competitions:
+        st.info('Noch keine Wettkämpfe vorhanden.')
+        return
+    comp_df = pd.DataFrame(competitions)
+    comp_df['Datum'] = comp_df['event_date'].map(showdate)
+    st.dataframe(comp_df[['Datum','name','location','starts']].rename(
+        columns={'name':'Wettkampf','location':'Ort','starts':'Starts'}),
+        hide_index=True, use_container_width=True)
+    by_id = {c['id']: c for c in competitions}
+    selection = st.selectbox('Wettkampf auswählen',
+        [0] + list(by_id),
+        format_func=lambda value: 'Alle Wettkämpfe' if value == 0 else comp_label(by_id[value]))
+    filtered = results if selection == 0 else [r for r in results if r['competition_id'] == selection]
+    display_results(filtered)
+
+
 def page_competitions():
+    if not is_admin():
+        return page_competitions_viewer()
     athletes, competitions, results = data()
     heading('Wettkämpfe', 'Veranstaltungen und Starts manuell erfassen oder bestehende Ergebnisse korrigieren.')
     tab1,tab2,tab3 = st.tabs(['➕ Ergebnis erfassen','🏟️ Wettkämpfe verwalten','📝 Ergebnisse verwalten'])
@@ -502,6 +565,7 @@ def _csv_export(results):
 
 
 def page_csv():
+    require_admin()
     heading('CSV-Import','Wettkämpfe aus vorhandenen Listen übernehmen – auch mehrere Athleten gleichzeitig.')
     example_path=db.BASE / 'beispiele' / 'wettkaempfe_beispiel.csv'
     l,r=st.columns(2)
@@ -607,6 +671,7 @@ def page_analysis():
 
 
 def page_backup():
+    require_admin()
     _,_,results=data()
     heading('Export & Sicherung','Daten lokal sichern und für andere Programme exportieren.')
     st.subheader('Ergebnisliste als CSV')
@@ -634,22 +699,33 @@ def page_backup():
     st.warning('Exporte enthalten personenbezogene Daten und müssen geschützt aufbewahrt werden.')
 
 
+ADMIN_PAGES = ['🏠 Übersicht','👥 Athleten','🏟️ Wettkämpfe',
+               '📥 CSV-Import','📈 Auswertungen','💾 Export & Sicherung']
+VIEWER_PAGES = ['🏠 Übersicht','👥 Athleten','🏟️ Wettkämpfe','📈 Auswertungen']
+
 with st.sidebar:
-    st.markdown('## 🏋️ GEWICHTHEBEN')
+    st.markdown('## 🏋️ A-TEAM ATHLETE DB')
     st.caption('WETTKAMPF- & KARRIERE-TRACKER')
     st.divider()
-    page=st.radio('Navigation', ['🏠 Übersicht','👥 Athleten','🏟️ Wettkämpfe',
-             '📥 CSV-Import','📈 Auswertungen','💾 Export & Sicherung'], label_visibility='collapsed')
+    st.caption('👑 Administrator' if is_admin() else '👀 Zuschauer · nur lesen')
+    page = st.radio('Navigation', ADMIN_PAGES if is_admin() else VIEWER_PAGES,
+                    label_visibility='collapsed')
     st.divider()
     if db.IS_POSTGRES:
         st.caption('PostgreSQL · dauerhafte Cloud-Speicherung')
         if st.button('🔒 Abmelden'):
-            st.session_state['logged_in'] = False
+            st.session_state.pop('auth_role', None)
+            st.session_state.pop('auth_proof', None)
+            st.session_state.pop('logged_in', None)  # Legacy auth state.
             st.rerun()
     else:
         st.caption('SQLite · lokale Speicherung (auf Streamlit Cloud nicht dauerhaft)')
-    st.caption('Version 1.6 · Versuchstatus & Relativwertung')
+    st.caption('Version 1.7 · Admin- und Zuschauerrollen')
 
-PAGES={'🏠 Übersicht':page_overview,'👥 Athleten':page_athletes,'🏟️ Wettkämpfe':page_competitions,
-       '📥 CSV-Import':page_csv,'📈 Auswertungen':page_analysis,'💾 Export & Sicherung':page_backup}
+PAGES = {'🏠 Übersicht': page_overview, '👥 Athleten': page_athletes,
+         '🏟️ Wettkämpfe': page_competitions, '📥 CSV-Import': page_csv,
+         '📈 Auswertungen': page_analysis, '💾 Export & Sicherung': page_backup}
+if page not in (ADMIN_PAGES if is_admin() else VIEWER_PAGES):
+    st.error('Keine Berechtigung für diese Seite.')
+    st.stop()
 PAGES[page]()
