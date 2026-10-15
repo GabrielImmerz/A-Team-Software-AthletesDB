@@ -4,18 +4,50 @@ from __future__ import annotations
 from datetime import date, datetime
 from io import StringIO
 import csv
+import hmac
+import os
 
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+st.set_page_config(page_title='Gewichtheben | Vereinstracker', page_icon='🏋️', layout='wide',
+                   initial_sidebar_state='expanded')
+
+# Cloud credentials are configured only in Streamlit Secrets, never in GitHub.
+def _secret(key):
+    try:
+        return st.secrets.get(key, os.getenv(key, ''))
+    except FileNotFoundError:
+        return os.getenv(key, '')
+
+
+cloud_url = _secret('DATABASE_URL')
+if cloud_url:
+    os.environ['DATABASE_URL'] = cloud_url
+    password = _secret('APP_PASSWORD')
+    if not password:
+        st.error('APP_PASSWORD fehlt in den Streamlit-Secrets. Zugriff auf die Cloud-Datenbank gesperrt.')
+        st.stop()
+    if not st.session_state.get('logged_in', False):
+        st.title('🔒 A-Team · Anmeldung')
+        st.info('Zugang zur Vereinsdatenbank nur für berechtigte Personen.')
+        with st.form('login_form'):
+            entered = st.text_input('Vereins-Passwort', type='password')
+            submit = st.form_submit_button('Anmelden', type='primary')
+        if submit:
+            if hmac.compare_digest(entered, password):
+                st.session_state['logged_in'] = True
+                st.rerun()
+            else:
+                st.error('Passwort ist nicht korrekt.')
+        st.stop()
+
 import database as db
 from csv_import import read_csv
 from domain import ATTEMPTS
 
-st.set_page_config(page_title='Gewichtheben | Vereinstracker', page_icon='🏋️', layout='wide',
-                   initial_sidebar_state='expanded')
 db.init_db()
 
 COLORS = {'total_kg':'#35d4bd','snatch_best':'#67aaff','clean_jerk_best':'#f7bd66', 'bodyweight_kg':'#b7a4ff'}
@@ -158,8 +190,7 @@ def page_overview():
                               xaxis=dict(dtick=1,gridcolor='#26384f'),yaxis=dict(title=None))
             st.plotly_chart(fig, use_container_width=True)
     st.subheader('Schnellstart')
-    st.info('Links **Athleten** zum Anlegen wählen oder unter **CSV-Import** deine bestehenden Wettkampflisten einlesen. ' 
-            'Es werden keine Daten an einen externen Server übertragen.')
+    st.info('Links **Athleten** zum Anlegen wählen oder unter **CSV-Import** deine bestehenden Wettkampflisten einlesen.')
 
 
 def page_athletes():
@@ -501,15 +532,22 @@ def page_backup():
         file_name=f'gewichtheben_ergebnisse_{date.today().isoformat()}.csv',mime='text/csv',
         disabled=not results)
     st.divider()
-    st.subheader('Vollständige Datenbank sichern')
-    st.write('Enthält Athletenstammdaten, Wettkämpfe und sämtliche Ergebnisse. ' 
-             'Die Datei lässt sich zur Wiederherstellung als `data/verein.sqlite3` ablegen, wenn die App beendet ist.')
-    st.download_button('⬇️ SQLite-Datenbank herunterladen',db.backup_bytes(),
-        file_name=f'gewichtheben_backup_{date.today().isoformat()}.sqlite3',
-        mime='application/octet-stream')
-    st.warning('Diese Anwendung ist für einen lokalen, vertrauenswürdigen Rechner vorgesehen. ' 
-               'Sie besitzt keine Benutzeranmeldung und sollte nicht öffentlich im Internet freigegeben werden. ' 
-               'Backups enthalten personenbezogene Daten – sicher aufbewahren.')
+    st.subheader('Vollständige Daten sichern')
+    if db.IS_POSTGRES:
+        st.write('Exportiert Athleten, Wettkämpfe und alle Ergebnisse in drei JSON-Dateien als ZIP. '
+                 '**Dieser Export kann nicht direkt in der App wiederhergestellt werden.** '
+                 'Für ein wiederherstellbares Datenbank-Backup die Sicherungsfunktion des PostgreSQL-Anbieters nutzen.')
+        st.download_button('⬇️ Datenexport als ZIP herunterladen', db.backup_bytes(),
+            file_name=f'gewichtheben_export_{date.today().isoformat()}.zip',
+            mime='application/zip')
+    else:
+        st.write('Enthält Athletenstammdaten, Wettkämpfe und sämtliche Ergebnisse. '
+                 'Bei der lokalen SQLite-Version lässt sich die Datei nach dem Beenden der App '
+                 'als `data/verein.sqlite3` wiederherstellen.')
+        st.download_button('⬇️ SQLite-Datenbank herunterladen', db.backup_bytes(),
+            file_name=f'gewichtheben_backup_{date.today().isoformat()}.sqlite3',
+            mime='application/octet-stream')
+    st.warning('Exporte enthalten personenbezogene Daten und müssen geschützt aufbewahrt werden.')
 
 
 with st.sidebar:
@@ -519,8 +557,14 @@ with st.sidebar:
     page=st.radio('Navigation', ['🏠 Übersicht','👥 Athleten','🏟️ Wettkämpfe',
              '📥 CSV-Import','📈 Auswertungen','💾 Export & Sicherung'], label_visibility='collapsed')
     st.divider()
-    st.caption('SQLite · lokal gespeichert')
-    st.caption('Version 1.0 · ohne Cloudzwang')
+    if db.IS_POSTGRES:
+        st.caption('PostgreSQL · dauerhafte Cloud-Speicherung')
+        if st.button('🔒 Abmelden'):
+            st.session_state['logged_in'] = False
+            st.rerun()
+    else:
+        st.caption('SQLite · lokale Speicherung (auf Streamlit Cloud nicht dauerhaft)')
+    st.caption('Version 1.1')
 
 PAGES={'🏠 Übersicht':page_overview,'👥 Athleten':page_athletes,'🏟️ Wettkämpfe':page_competitions,
        '📥 CSV-Import':page_csv,'📈 Auswertungen':page_analysis,'💾 Export & Sicherung':page_backup}

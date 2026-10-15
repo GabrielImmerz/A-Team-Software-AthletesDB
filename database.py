@@ -231,3 +231,16 @@ def backup_bytes(db_path=None):
             finally:
                 dest.close()
         return target.read_bytes()
+
+
+# The original local SQLite backend remains available. When DATABASE_URL is
+# set, transparently use PostgreSQL for the existing Streamlit UI.
+IS_POSTGRES = bool(os.getenv('DATABASE_URL', '').strip())
+if IS_POSTGRES:
+    from postgres_backend import (
+        connect, init_db, list_athletes, add_athlete, validate_year,
+        edit_athlete, delete_athlete, create_competition,
+        _get_or_create_competition, list_competitions, delete_competition,
+        _write_result, save_result, delete_result, list_results,
+        import_results, backup_bytes,
+    )
