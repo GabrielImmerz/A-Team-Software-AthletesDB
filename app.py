@@ -138,7 +138,20 @@ def invalidate_data_cache():
 
 
 def athlete_label(a):
-    return f'{a["first_name"]} {a["last_name"]}  ·  #{a["id"]}'
+    # Die ID wird nur intern zur eindeutigen Zuordnung verwendet.
+    return f'{a["first_name"]} {a["last_name"]}'
+
+
+def sorted_athlete_ids(by_id):
+    # Alphabetisch nach Nachname, dann Vorname; ID nur als stabiler Tie-Breaker.
+    return sorted(
+        by_id,
+        key=lambda athlete_id: (
+            str(by_id[athlete_id].get('last_name') or '').casefold(),
+            str(by_id[athlete_id].get('first_name') or '').casefold(),
+            athlete_id,
+        ),
+    )
 
 
 def comp_label(c):
@@ -294,22 +307,11 @@ def page_athletes():
                     'Lege zuerst einen Athleten an oder importiere eine CSV-Datei.')
             return
         by_id = {a['id']: a for a in athletes}
-        # Sort the profile selector by last name, but keep athlete IDs as values:
-        # identical names still refer to the correct person internally.
-        sorted_athlete_ids = sorted(
-            by_id,
-            key=lambda athlete_id: (
-                str(by_id[athlete_id].get('last_name') or '').casefold(),
-                str(by_id[athlete_id].get('first_name') or '').casefold(),
-                athlete_id,
-            ),
-        )
+        # Gleiche Anzeige wie in Wettkämpfen und Auswertungen.
         chosen = st.selectbox(
             'Athlet auswählen',
-            sorted_athlete_ids,
-            format_func=lambda athlete_id: (
-                f'{by_id[athlete_id]["first_name"]} {by_id[athlete_id]["last_name"]}'
-            ),
+            sorted_athlete_ids(by_id),
+            format_func=lambda athlete_id: athlete_label(by_id[athlete_id]),
             key='athlete_profile',
         )
         athlete = by_id[chosen]
@@ -454,7 +456,7 @@ def page_competitions():
             detailed = st.checkbox('Einzelversuche erfassen (inkl. x94, -94, v, -)', value=True, key='manual_detailed')
             st.caption('Die BVDG-Relativpunkte berechnet die App nach dem Speichern automatisch aus Geschlecht, Körpergewicht und gültigen Bestwerten. Kein zusätzliches Punktefeld nötig.')
             with st.form('add_result'):
-                aid = st.selectbox('Athlet',list(athlete_map),format_func=lambda v:athlete_label(athlete_map[v]))
+                aid = st.selectbox('Athlet',sorted_athlete_ids(athlete_map),format_func=lambda v:athlete_label(athlete_map[v]))
                 options = [0]+list(comp_map)
                 cid = st.selectbox('Wettkampf',options,format_func=lambda v:'➕ Neuen Wettkampf anlegen' if v==0 else comp_label(comp_map[v]))
                 if cid==0:
@@ -653,7 +655,8 @@ def page_analysis():
     by_id={a['id']:a for a in athletes}
     l,r=st.columns([1.5,1])
     metric=l.selectbox('Wert auswählen',list(METRICS),format_func=lambda x:METRICS[x])
-    chosen=r.multiselect('Athleten vergleichen',list(by_id),default=list(by_id)[:min(len(by_id),3)],
+    athlete_ids = sorted_athlete_ids(by_id)
+    chosen=r.multiselect('Athleten vergleichen',athlete_ids,default=athlete_ids[:min(len(athlete_ids),3)],
                            format_func=lambda v:athlete_label(by_id[v]),max_selections=8)
     if not chosen:
         st.warning('Bitte mindestens einen Athleten auswählen.')
