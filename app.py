@@ -266,7 +266,7 @@ def page_athletes():
     heading('Athleten', 'Personen verwalten, Bestleistungen ansehen und die Karriere verfolgen.' if is_admin()
             else 'Athletenprofile, Bestleistungen und Karriereverläufe ansehen.')
     if is_admin():
-        create_tab,profile_tab = st.tabs(['➕ Neuen Athleten anlegen', '📈 Profil & Verwaltung'])
+        profile_tab,create_tab = st.tabs(['📈 Profil & Verwaltung', '➕ Neuen Athleten anlegen'])
     else:
         profile_tab = st.container()
     if is_admin():
@@ -294,8 +294,24 @@ def page_athletes():
                     'Lege zuerst einen Athleten an oder importiere eine CSV-Datei.')
             return
         by_id = {a['id']: a for a in athletes}
-        chosen = st.selectbox('Athlet auswählen', list(by_id), format_func=lambda x: athlete_label(by_id[x]),
-                              key='athlete_profile')
+        # Sort the profile selector by last name, but keep athlete IDs as values:
+        # identical names still refer to the correct person internally.
+        sorted_athlete_ids = sorted(
+            by_id,
+            key=lambda athlete_id: (
+                str(by_id[athlete_id].get('last_name') or '').casefold(),
+                str(by_id[athlete_id].get('first_name') or '').casefold(),
+                athlete_id,
+            ),
+        )
+        chosen = st.selectbox(
+            'Athlet auswählen',
+            sorted_athlete_ids,
+            format_func=lambda athlete_id: (
+                f'{by_id[athlete_id]["first_name"]} {by_id[athlete_id]["last_name"]}'
+            ),
+            key='athlete_profile',
+        )
         athlete = by_id[chosen]
         athlete_results = [r for r in results if r['athlete_id'] == chosen]
         q1,q2,q3,q4 = st.columns(4)
@@ -428,7 +444,7 @@ def page_competitions():
         return page_competitions_viewer()
     athletes, competitions, results = data()
     heading('Wettkämpfe', 'Veranstaltungen und Starts manuell erfassen oder bestehende Ergebnisse korrigieren.')
-    tab1,tab2,tab3 = st.tabs(['➕ Ergebnis erfassen','🏟️ Wettkämpfe verwalten','📝 Ergebnisse verwalten'])
+    tab3,tab2,tab1 = st.tabs(['📝 Ergebnisse verwalten','🏟️ Wettkämpfe verwalten','➕ Ergebnis erfassen'])
     with tab1:
         if not athletes:
             st.warning('Bitte zuerst einen Athleten unter „Athleten“ anlegen.')
